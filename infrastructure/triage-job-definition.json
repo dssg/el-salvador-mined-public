@@ -1,0 +1,17 @@
+{
+    "jobDefinitionName": "mined-run-experiment",
+    "type": "container",
+    "containerProperties": {
+        "image": "<aws image>",
+        "vcpus": 44,
+        "memory": 188000,
+        "jobRoleArn": "<aws iam role>",
+		"command": [
+		    "--experiment-file", "Ref::experiment_file", "--output-path", "Ref::output_path", "Ref::replace", "Ref::models", "Ref::save_predictions"
+
+	    ]
+    },
+    "retryStrategy": {"attempts": 1}
+}
+
+

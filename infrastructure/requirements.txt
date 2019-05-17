@@ -1,0 +1,6 @@
+python-dotenv
+psycopg2-binary==2.7.7
+
+## DSaPP stuff
+git+https://github.com/dssg/triage.git #@v3.0.2 # This version supports postgresql roles
+

@@ -1,0 +1,44 @@
+{
+    "environment": [
+        {
+            "name":"AWS_DEFAULT_REGION",
+            "value":"<region>"
+        },
+        {
+            "name":"AWS_JOB_QUEUE",
+            "value":"<queue>"
+        },
+        {
+            "name":"POSTGRES_PASSWORD",
+            "value":"<password>"
+        },
+        {
+            "name":"POSTGRES_USER",
+            "value":"<user>"
+        },
+        {
+            "name":"POSTGRES_DB",
+            "value":"<db>"
+        },
+        {
+            "name":"POSTGRES_ROLE",
+            "value":"<role>"
+        },
+        {
+            "name":"POSTGRES_PORT",
+            "value":"<port>"
+        },
+        {
+            "name":"POSTGRES_HOST",
+            "value":"<host>"
+        },
+        {
+            "name":"NUMBER_OF_PROCESSES",
+            "value":"<processes>"
+        },
+        {
+            "name":"NUMBER_OF_DB_PROCESSES",
+            "value":"<db_processes"
+        }
+    ]
+}

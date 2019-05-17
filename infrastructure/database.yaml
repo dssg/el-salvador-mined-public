@@ -1,0 +1,6 @@
+pass: <pass>
+user: <user>
+db: <database>
+role: <role>
+port: <port>
+host: <host>

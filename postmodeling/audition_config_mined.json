@@ -1,0 +1,8 @@
+{
+	"model_group_ids": [4, 5, 6, 40, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144],
+	"train_end_times": [2011-01-01, 2012-01-01, 2013-01-01, 2014-01-01, 2015-01-01, 2016-01-01],
+	"initial_metric_filters": [{"metric": "precision@",
+    	  "parameter": "50_abs",
+    	  "max_from_best": 1.0,
+    	  "threshold_value": 0.0}]
+}

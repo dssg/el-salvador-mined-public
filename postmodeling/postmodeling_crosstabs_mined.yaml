@@ -1,0 +1,55 @@
+output:
+  schema: 'test_results'
+  table: 'crosstabs'
+
+thresholds:
+    rank_abs: []
+    rank_pct: [5, 10, 25]
+
+#(optional): a list of entity_ids to subset on the crosstabs analysis
+entity_id_list: []
+
+models_list_query: "select unnest(ARRAY[37]) :: int as model_id"
+
+as_of_dates_query: "select unnest(ARRAY['2016-01-01']) :: date as as_of_date"
+
+#don't change this query unless strictly necessary. It is just validating pairs of (model_id,as_of_date)
+#it is just a join with distinct (model_id, as_of_date) in a predictions table
+models_dates_join_query: "
+select model_id,
+      as_of_date
+      from models_list_query m
+      cross join as_of_dates_query a join (select distinct model_id, as_of_date from test_results.predictions) p
+      using (model_id, as_of_date)"
+
+#features_query must join models_dates_join_query with 1 or more features table using as_of_date
+features_query: '
+select * 
+ from (select entity_id, "commute_entity_id_all_commute__NULL_avg", "commute_entity_id_5y_commute__NULL_avg", "commute_entity_id_5y_commute__NULL_sum", commute_entity_id_1y_commute_peatonal_avg,
+  commute_entity_id_5y_commute_otro_avg, commute_entity_id_5y_commute_otro_sum, commute_entity_id_5y_commute_publico_sum, "commute_entity_id_1y_commute__NULL_avg",
+  commute_entity_id_all_commute_publico_sum, commute_entity_id_5y_commute_familiar_sum, as_of_date::date from features.commute_aggregation_imputed) f1 join
+ (select dropout_entity_id_all_dropout_total_sum, dropout_entity_id_all_dropout_total_avg, as_of_date::date from features.dropout_aggregation_imputed) f2 using (as_of_date) join
+ (select events_entity_id_3y_total_count, events_entity_id_all_total_count, events_entity_id_1y_total_count, as_of_date::date from features.events_aggregation_imputed) f3 using (as_of_date) join
+ (select family_entity_id_1y_family_members_avg, family_entity_id_1y_family_members_min, family_entity_id_1y_family_members_max, family_entity_id_all_family_members_avg, family_entity_id_1y_father_max_imp, family_entity_id_all_family_members_min, family_entity_id_1y_father_max, family_entity_id_1y_father_sum_imp, family_entity_id_1y_father_avg_imp, family_entity_id_1y_father_avg, family_entity_id_5y_mother_sum, family_entity_id_1y_father_sum, as_of_date from features.family_aggregation_imputed) f4 using (as_of_date) join
+ (select gender_entity_id_all_gender_m_sum, gender_entity_id_all_gender_f_sum, gender_entity_id_all_gender_f_max, "gender_entity_id_1y_gender__NULL_sum", as_of_date::date from features.gender_aggregation_imputed) f5 using (as_of_date) join
+ (select illness_entity_id_5y_illness_bool_sum, illness_entity_id_all_illness_bool_avg, illness_entity_id_5y_illness_bool_avg, illness_entity_id_all_illness_bool_avg_imp, illness_entity_id_3y_illness_bool_avg,
+  illness_entity_id_all_illness_bool_sum_imp, as_of_date::date from features.illness_aggregation_imputed) f6 using (as_of_date) join
+ (select repeater_entity_id_3y_total_avg, repeater_entity_id_5y_total_sum, repeater_entity_id_3y_total_sum, repeater_entity_id_all_total_avg,
+  repeater_entity_id_1y_total_avg, repeater_entity_id_5y_total_avg, repeater_entity_id_1y_total_sum, repeater_entity_id_all_total_sum, repeater_entity_id_1y_total_max, as_of_date::date from features.repeater_aggregation_imputed) f7 using (as_of_date) join
+ (select rural_entity_id_all_rural_bool_sum, rural_entity_id_3y_rural_bool_sum, rural_entity_id_5y_rural_bool_sum, rural_entity_id_3y_rural_bool_avg, rural_entity_id_5y_rural_bool_avg, as_of_date::date from features.rural_aggregation_imputed) f8 using (as_of_date) join
+ (select model_id, as_of_date::date from models_dates_join_query) m using (as_of_date)'
+
+#the predictions query must return model_id, as_of_date, entity_id, score, label_value, rank_abs and rank_pct
+#it must join models_dates_join_query using both model_id and as_of_date
+predictions_query: "
+select model_id,
+      as_of_date,
+      entity_id,
+      score,
+      label_value,
+      coalesce(rank_abs, row_number() over (partition by (model_id, as_of_date) order by score desc)) as rank_abs,
+      coalesce(rank_pct*100, ntile(100) over (partition by (model_id, as_of_date) order by score desc)) as rank_pct
+  from test_results.predictions
+  JOIN models_dates_join_query USING(model_id, as_of_date)
+  where model_id IN (select model_id from models_list_query)
+  AND as_of_date in (select as_of_date from as_of_dates_query)"

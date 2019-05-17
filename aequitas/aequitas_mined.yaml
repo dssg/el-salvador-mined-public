@@ -1,0 +1,27 @@
+# Thresholds for positive class (absolutes top k and top k %)
+score_thresholds:
+    rank_pct: [5.0, 10.0]
+
+#available options: "predefined", "majority" and "min_metric"
+ref_groups_method: "majority"
+
+# fairness threshold to be used for assessing fairness
+fairness_threshold: 0.7
+
+# available fairness_measeure "Impact Parity", "Statistical Parity", "FPR Parity", "FDR Parity", "FNR Parity", "FOR Parity"
+fairness_measures: ["Statistical Parity", "FOR Parity", "FNR Parity"]
+
+# to connect to a database instead of using "--input <filename>", use the db key, credentials, and input_query
+db:
+    db_credentials:
+        host: <host>
+        database: <db>
+        user: <user>
+        password: <pw>
+        port: <port>
+
+
+    # the input query should return a table with score, label_value columns and then each attribute you want to use for bias analysis
+    input_query: "select entity_id::text, score::float4, label_value::int, model_id::int, gender::text, rural::text, ovg_bool::text from (select * from test_results.predictions where model_id = 303) as pred_303 left join (select max(ovg_bool) as ovg_bool, entity_id as ovg_id from features.overage_from_obj where event_date = to_date('20160101', 'YYYYMMDD') group by entity_id) as ovg on entity_id = ovg_id left join (select max(gender) as gender, entity_id as gen_id from features.gender_from_obj where event_date = to_date('20160101', 'YYYYMMDD') group by entity_id) as gen on entity_id = gen_id left join (select case when max(rural) = 'rural' then 'rural' when max(rural) LIKE 'urban_' then 'urban' else 'unknown' end as rural, entity_id as rur_id from features.rural_from_obj where event_date = to_date('20160101', 'YYYYMMDD') group by entity_id) as rur on entity_id = rur_id limit 100000"
+    # the output schema is optional, default=public
+    output_schema: test_results

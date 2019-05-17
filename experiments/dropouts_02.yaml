@@ -1,0 +1,2912 @@
+config_version: 'v6'
+
+model_comment: 'dropouts w school features'
+
+user_metadata:
+  label_definition: 'dropout'
+  experiment_type: 'exploratory'
+  org: 'DSaPP'
+  team: 'El Salvador MINED'
+  author: 'Alena Stern'
+
+temporal_config:
+    feature_start_time: '2009-01-01'
+    feature_end_time: '2018-01-01'
+
+    label_start_time: '2010-01-01'
+
+    label_end_time: '2018-01-01'
+
+    model_update_frequency: '1y'
+    training_label_timespans: ['1y']
+    training_as_of_date_frequencies: '1y'
+
+    test_durations: '1y'
+    test_label_timespans: ['1y']
+    test_as_of_date_frequencies: '1y'
+
+    max_training_histories: '5y'
+    
+cohort_config:
+
+  query: |
+    select distinct(student)::int as entity_id
+    from semantic.events_student
+    where
+    event_date = '{as_of_date}'::date and
+    length(student) > 3 and length(student) < 9
+  name: 'student'
+
+label_config:
+  query: |
+    with partitioned as (
+    select student, 
+    array_agg(distinct grado_code) as grado_codes, -- Aggregates of grado_codes and promotion_status within the year
+    array_agg(distinct promotion_status) as passed,
+    event_date,
+    case 
+        when 'GENERAL' = any(array_agg(bach_modalidad)) then 11  -- If the student is in any bachillerato general during the year, the final year is considered to be 11. This fails for students that are in General in 11, move to Vocacional in 11, and then dropout.
+        when ARRAY['TECNICO VOCACIONAL', 'APREMAT', 'PILET'] && array_agg(bach_modalidad) then 12  -- If the student is in any of the other types of bachillerato, the final year is 12.
+        else NULL::int end as final_bach_year,
+    lead(event_date) over (partition by student order by event_date) as next_year 
+    from semantic.events_student
+    group by student,  event_date)
+
+    select student::int as entity_id, event_date, grado_codes, passed, final_bach_year, next_year, case 
+      when next_year = event_date + interval '{label_timespan}'  -- If a student is present the next year, they did not drop out
+      then 0
+      when final_bach_year <= any(grado_codes) and 'passed' = any(passed)  -- If they reached the final year of bachillerato and they passed, they did not drop out
+      then 0
+      else 1 end as outcome
+      from partitioned
+      where length(student) > 3 and length(student) < 9 and event_date = '{as_of_date}'::date
+  
+  name: 'dropout'
+
+feature_aggregations:
+    -
+      prefix: 'overage'
+      from_obj: |
+        (with tmp as (select event_date - birth_date as age, student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9), 
+        overage as (select age - avg(age) over (PARTITION by grado_code) as ovg, entity_id, event_date, grado_code from tmp)
+        select entity_id, ovg, case when ovg > 2*stddev(ovg) over (PARTITION by grado_code) then 1 else 0 end as ovg_bool, event_date from overage) as ovgdata
+
+      knowledge_date_column: 'event_date'
+
+      aggregates_imputation:
+        all:
+            type: 'mean'
+
+      aggregates:
+        
+        - # raw overage 
+          quantity:
+            total: "ovg"
+          metrics:
+            - 'avg'
+            - 'max'
+            - 'sum'
+
+        - # overage_boolean 
+          quantity:
+            overage_bool: "ovg_bool"
+          metrics:
+            - 'avg'
+            - 'max'
+            - 'sum'
+
+      intervals: ['1y', '3y', '5y', 'all']
+
+
+      groups:
+        - 'entity_id'
+
+
+
+    -
+        prefix: 'repeater'
+        from_obj: |
+          (select student::int as entity_id, 
+          coalesce((extract(year from event_date)::int - extract(year from lag(event_date) over (PARTITION by student))::int) -
+          (grado_code - lag(grado_code) over (PARTITION by student)), 0) as repeats, event_date from semantic.events_student where length(student) > 3 and length(student) < 9) as repeater
+
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'constant'
+              value: 0 
+
+        aggregates:
+          - # raw repeats
+            quantity:
+              total: "repeats"::int
+            metrics:
+              - 'sum'
+              - 'avg'
+              - 'max'
+
+          - # repeats_boolean
+            quantity:
+              repeats_bool: "case when repeats > 0 then 1 else 0 end"::int
+            metrics:
+              - 'sum'
+              - 'avg'
+              - 'max'
+
+        intervals: ['1y', '3y', '5y', 'all']
+
+
+        groups:
+          - 'entity_id'
+
+    -
+        prefix: 'rural'
+        from_obj: |
+          (select student::int as entity_id, event_date, school, code, rural from semantic.events_student left join cleaned."1_cleaned" on events_student.school = cleaned."1_cleaned".code 
+          and EXTRACT(year from events_student.event_date) = EXTRACT(year from lower(cleaned."1_cleaned".year_range)) where length(student) > 3 and length(student) < 9) as rural
+        
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+             all:
+              type: 'constant'
+              value: 0  
+
+        aggregates:
+          - # rural_boolean
+            quantity:
+              rural_bool: "case when rural = 'rural' then 1 else 0 end"::int
+            metrics:
+              - 'sum'
+              - 'avg'
+              - 'max'
+
+        intervals: ['1y', '3y', '5y', 'all']
+
+
+        groups:
+          - 'entity_id'
+
+    -
+        prefix: 'events'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9) as dropouts
+
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # number of events
+            quantity:
+              total: "*"::int
+            metrics:
+              - 'count'
+
+        intervals: ['1y', '3y', '5y', 'all']
+
+
+        groups:
+          - 'entity_id'
+
+    -
+        prefix: 'dropout'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.label where length(student) > 3 and length(student) < 9) as dropouts
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # number of dropouts
+            quantity:
+              dropout_total: label::int
+            metrics:
+              - 'sum'
+              - 'avg'
+
+        intervals: ['5y', 'all']
+
+        groups:
+          - 'entity_id'
+
+
+    -
+        prefix: 'gender'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9) as dropouts
+
+        knowledge_date_column: 'event_date'
+
+        categoricals_imputation:
+            all:
+              type: 'mean'
+              
+
+        categoricals:
+            - # gender 
+                column: gender
+                choice_query: 'select distinct gender from semantic.events_student'
+                metrics:
+                    - 'sum'
+                    - 'avg'
+                    - 'max'
+
+        intervals: ['1y', 'all']
+
+
+        groups:
+            - 'entity_id'
+
+    -
+        prefix: 'commute'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9) as dropouts
+
+        knowledge_date_column: 'event_date'
+
+        categoricals_imputation:
+            all:
+              type: 'mean'
+
+        categoricals:
+            -
+                column: commute
+                choice_query: 'select distinct commute from semantic.events_student'
+                metrics:
+                    - 'avg'
+                    - 'sum'
+
+        intervals: ['1y', '5y', 'all']
+
+
+        groups:
+            - 'entity_id'
+
+    -
+        prefix: 'illness'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9) as dropouts
+
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # illness
+              quantity:
+                illness_bool: "case when illness is null or illness = 'NINGUNA' then 0 else 1 end"
+              metrics:
+                  - 'avg'
+                  - 'sum'
+
+        intervals: ['1y', '3y', '5y', 'all']
+
+
+        groups:
+            - 'entity_id'
+
+    -
+        prefix: 'family'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student where length(student) > 3 and length(student) < 9) as dropouts
+          
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # number of family members
+            quantity: 
+              family_members: family_members::int
+            metrics:
+              - 'avg'
+              - 'max'
+              - 'min'
+
+          - # father present
+            quantity: 
+              father: "case when father is not null then 1 else 0 end"::int
+            metrics:
+              - 'avg'
+              - 'sum'
+              - 'max'
+
+          - # mother present
+            quantity: 
+              mother: "case when mother is not null then 1 else 0 end"::int
+            metrics:
+              - 'avg'
+              - 'sum'
+              - 'max'
+
+          - # two parent
+            quantity: 
+              two_parent: "case when mother is not null and father is not null then 1 else 0 end"::int
+            metrics:
+              - 'avg'
+              - 'sum'
+              - 'max'
+
+          - # not parent responsible
+            quantity: 
+              not_parent_responsible: "case when responsable != mother and responsable != father then 1 else 0 end"::int
+            metrics:
+              - 'avg'
+              - 'sum'
+              - 'max'
+
+        intervals: ['1y', '5y', 'all']
+
+        groups:
+          - 'entity_id'
+    -
+        prefix: 'sch_i'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student st join semantic.events_school sc
+           using (event_date, school)
+           where length(student) > 3 and length(student) < 9) as dropouts
+          
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # dropout presence gangs
+            quantity: 
+              presence_gangs: 'ce_causas_desercion_presencia_pandillas::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout work
+            quantity: 
+              dropout_work: 'ce_causas_desercion_incorporacion_trabajo::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # drug factors
+            quantity: 
+              drug: 'factores_ce_drogas::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # extortion factors
+            quantity: 
+              extorton: 'factores_ce_extorsiones::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # sexual exploitation community factors
+            quantity: 
+              c_sexual_exploitation: 'factores_comunidad_explotacion_sexual::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout gang violence
+            quantity: 
+              dropout_gang_violence: 'ce_causas_desercion_violencia_pandilleril::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # violation factors
+            quantity: 
+              violations: 'factores_ce_violaciones::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout sexual violence
+            quantity: 
+              dropout_sexual_violence: 'ce_causas_desercion_violencia_sexual::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # maras community factors
+            quantity: 
+              community_maras: 'factores_comunidad_maras::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # trata community factors
+            quantity: 
+              community_trata: 'factores_comunidad_trata::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout pregnancy
+            quantity: 
+              dropout_pregnancy: 'ce_causas_desercion_embarazo::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout migration
+            quantity: 
+              dropout_migration: 'ce_causas_desercion_migracion::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # violations community factors
+            quantity: 
+              c_violations: 'factores_comunidad_violaciones::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # knives community factors
+            quantity: 
+              c_knives: 'factores_comunidad_armas_blancas::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # maras factors
+            quantity: 
+              maras: 'factores_ce_maras::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # dropout bullying
+            quantity: 
+              dropout_bullying: 'ce_causas_desercion_acoso::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+          
+          - # dropout prostitution
+            quantity: 
+              dropout_prostitution: 'ce_causas_desercion_prostitucion::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+          - # robberies community factors
+            quantity: 
+              c_robberies: 'factores_comunidad_robos::int'::int
+            metrics:
+              - 'avg'
+              - 'max'
+
+        intervals: ['1y', '5y', '3y', 'all']
+
+        groups:
+          - 'entity_id'
+
+    -
+        prefix: 'sch_agg'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student st join semantic.events_school sc
+           using (event_date, school)
+           where length(student) > 3 and length(student) < 9) as dropouts  
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+            all:
+              type: 'mean'
+
+        aggregates:
+          - # reporting differential
+            quantity: 
+              reporting_diff: difference::int
+            metrics:
+              - 'avg'
+
+          - # accelerated education
+            quantity: 
+              accelerated_ed: accelerated_education::int
+            metrics:
+              - 'avg'
+
+          - # avg num years in kindergarten
+            quantity: 
+              avg_kindergarten: parvularia::int
+            metrics:
+              - 'avg'
+
+          - # classrooms
+            quantity:
+              avg_classroom: classrooms::int
+            metrics:
+              - 'avg'
+
+          - # classrooms_used
+            quantity:
+              avg_classroom_used: classrooms_used::int
+            metrics:
+              - 'avg'
+
+          - # classrooms_unused
+            quantity:
+              avg_classroom_unused: classrooms_unused::int
+            metrics:
+              - 'avg'
+
+          - # computers_admin
+            quantity:
+              avg_computers: computer_admin::int
+            metrics:
+              - 'avg'
+
+          - # computers_educ
+            quantity:
+              avg_computers_educ: computer_educ::int
+            metrics:
+              - 'avg'
+
+          - # computers_rooms
+            quantity:
+              avg_computers_rooms: computer_rooms::int
+            metrics:
+              - 'avg'
+
+          - # computers_student
+            quantity:
+              avg_computers_student: computer_student::int
+            metrics:
+              - 'avg'
+
+          - # coop_econ
+            quantity:
+              avg_coop_econ: 'coop_econ::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_construct
+            quantity:
+              avg_coop_construct: 'coop_construct::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_food
+            quantity:
+              avg_coop_food: 'coop_food::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_furnit
+            quantity:
+              avg_coop_furnit: 'coop_furnit::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_infrastr
+            quantity:
+              avg_coop_infrastr: 'coop_infrastr::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_salary
+            quantity:
+              avg_coop_salary: 'coop_salary::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_teach_mat
+            quantity:
+              avg_coop_teach_mat: 'coop_teach_mat::int'::int
+            metrics:
+              - 'avg'
+
+          - # coop_tech
+            quantity:
+              avg_coop_tech: 'coop_tech::int'::int
+            metrics:
+              - 'avg'
+
+          - # dining_room
+            quantity:
+              avg_dining_room: 'dining_room::int'::int
+            metrics:
+              - 'avg'
+
+          - # dvd_lease
+            quantity:
+              avg_dvd_lease: dvd_lease::int
+            metrics:
+              - 'avg'
+
+          - # dvd_student
+            quantity:
+              avg_dvd_student: dvd_student::int
+            metrics:
+              - 'avg'
+
+          - # etip
+            quantity:
+              avg_etip: 'eitp::int'::int
+            metrics:
+              - 'avg'
+
+          - # etip_program
+            quantity:
+              avg_etip_program: 'eitp_program::int'::int
+            metrics:
+              - 'avg'
+
+          - # electricity
+            quantity:
+              avg_electricity: 'electricity::int'::int
+            metrics:
+              - 'avg'
+
+          - # electricity_generator
+            quantity:
+              avg_electricity_generator: 'electricity_generator::int'::int
+            metrics:
+              - 'avg'
+
+          - # electricity_works
+            quantity:
+              avg_electricity_works: 'electricity_works::int'::int
+            metrics:
+              - 'avg'
+
+          - # english_lab
+            quantity:
+              avg_english_lab: 'english_lab::int'::int
+            metrics:
+              - 'avg'
+
+          - # farm
+            quantity:
+              avg_farm: 'farm::int'::int
+            metrics:
+              - 'avg'
+
+          - # field_basketball
+            quantity:
+              avg_field_basketball: 'field_basketball::int'::int
+            metrics:
+              - 'avg'
+
+          - # field_football
+            quantity:
+              avg_field_football: 'field_football::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_construct
+            quantity:
+              avg_gov_construct: 'gov_construct::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_econ
+            quantity:
+              avg_gov_econ: 'gov_econ::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_food
+            quantity:
+              avg_gov_food: 'gov_food::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_furnit
+            quantity:
+              avg_gov_furnit: 'gov_furnit::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_infrastr
+            quantity:
+              avg_gov_infrastr: 'gov_infrastr::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_salary
+            quantity:
+              avg_gov_salary: 'gov_salary::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_teach_mat
+            quantity:
+              avg_gov_teach_mat: 'gov_teach_mat::int'::int
+            metrics:
+              - 'avg'
+
+          - # gov_tech
+            quantity:
+              avg_gov_tech: 'gov_tech::int'::int
+            metrics:
+              - 'avg'
+
+          - # income_celeb
+            quantity:
+              income_celeb: income_celeb::int
+            metrics:
+              - 'avg'
+
+          - # income_donat
+            quantity:
+              income_donat: income_donat::int
+            metrics:
+              - 'avg'
+
+          - # income_volunteer
+            quantity:
+              income_volunteer: income_volunteer::int
+            metrics:
+              - 'avg'
+
+          - # internet
+            quantity:
+              internet: 'internet::int'::int
+            metrics:
+              - 'avg'
+
+          - # internet_admin
+            quantity:
+              internet_admin: internet_admin::int
+            metrics:
+              - 'avg'
+
+          - # internet_student
+            quantity:
+              internet_student: internet_student::int
+            metrics:
+              - 'avg'
+
+          - # internet_teachers
+            quantity:
+              internet_teachers: internet_teachers::int
+            metrics:
+              - 'avg'
+
+          - # kitchen
+            quantity:
+              avg_kitchen: 'kitchen::int'::int
+            metrics:
+              - 'avg'
+
+          - # kitchen_bodega
+            quantity:
+              avg_kitchen_bodega: 'kitchen_bodega::int'::int
+            metrics:
+              - 'avg'
+
+          - # lab
+            quantity:
+              avg_lab: 'lab::int'::int
+            metrics:
+              - 'avg'
+
+          - # library
+            quantity:
+              avg_library: 'library::int'::int
+            metrics:
+              - 'avg'
+
+          - # lunch_sections
+            quantity:
+              avg_lunch_sections: lunch_sections::int
+            metrics:
+              - 'avg'
+
+          - # microphone_lease
+            quantity:
+              avg_microphone_lease: microphone_lease::int
+            metrics:
+              - 'avg'
+
+          - # microphone_student
+            quantity:
+              avg_microphone_student: microphone_student::int
+            metrics:
+              - 'avg'
+
+          - # n_teachers
+            quantity:
+              avg_n_teachers: n_teachers::int
+            metrics:
+              - 'avg'
+
+          - # native_stud_f
+            quantity:
+              native_stud_f: native_stud_f::int
+            metrics:
+              - 'avg'
+
+          - # native_stud_m
+            quantity:
+              native_stud_m: native_stud_m::int
+            metrics:
+              - 'avg'
+
+          - # ngo_construct
+            quantity:
+              avg_ngo_construct: 'ngo_construct::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_econ
+            quantity:
+              avg_ngo_econ: 'ngo_econ::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_food
+            quantity:
+              avg_ngo_food: 'ngo_food::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_furnit
+            quantity:
+              avg_ngo_furnit: 'ngo_furnit::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_infrastr
+            quantity:
+              avg_ngo_infrastr: 'ngo_infrastr::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_salary
+            quantity:
+              avg_ngo_salary: 'ngo_salary::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_teach_mat
+            quantity:
+              avg_ngo_teach_mat: 'ngo_teach_mat::int'::int
+            metrics:
+              - 'avg'
+
+          - # ngo_tech
+            quantity:
+              avg_ngo_tech: 'ngo_tech::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_construct
+            quantity:
+              avg_no_construct: 'no_constr::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_econ
+            quantity:
+              avg_no_econ: 'no_econ::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_food
+            quantity:
+              avg_no_food: 'no_food::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_furnit
+            quantity:
+              avg_no_furnit: 'no_furnit::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_infrastr
+            quantity:
+              avg_no_infrastr: 'no_infrastr::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_salary
+            quantity:
+              avg_no_salary: 'no_salary::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_teach_mat
+            quantity:
+              avg_no_teach_mat: 'no_teach_mat::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_tech
+            quantity:
+              avg_no_tech: 'no_tech::int'::int
+            metrics:
+              - 'avg'
+
+          - # no_water
+            quantity:
+              avg_no_water: 'no_water::int'::int
+            metrics:
+              - 'avg'
+
+          - # olpc_lease
+            quantity:
+              avg_olpc_lease: olpc_lease::int
+            metrics:
+              - 'avg'
+
+          - # olpc_student
+            quantity:
+              avg_olpc_student: olpc_student::int
+            metrics:
+              - 'avg'
+
+          - # owner_borrow
+            quantity:
+              avg_owner_borrow: 'owner_borrow::int'::int
+            metrics:
+              - 'avg'
+
+          - # owner_lease
+            quantity:
+              avg_owner_lease: 'owner_lease::int'::int
+            metrics:
+              - 'avg'
+
+          - # owner_own
+            quantity:
+              avg_owner_own: 'owner_own::int'::int
+            metrics:
+              - 'avg'
+
+          - # owner_loan
+            quantity:
+              avg_owner_loan: 'owner_loan::int'::int
+            metrics:
+              - 'avg'
+
+          - # paquete_escolar
+            quantity:
+              avg_paquete_escolar: 'paquete_escolar::int'::int
+            metrics:
+              - 'avg'
+
+          - # parent_school
+            quantity:
+              avg_parent_school: 'parent_school::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_construct
+            quantity:
+              avg_private_construct: 'private_construct::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_econ
+            quantity:
+              avg_private_econ: 'private_econ::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_food
+            quantity:
+              avg_private_food: 'private_food::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_furnit
+            quantity:
+              avg_private_furnit: 'private_furnit::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_infrastr
+            quantity:
+              avg_private_infrastr: 'private_infrastr::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_salary
+            quantity:
+              avg_private_salary: 'private_salary::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_subsidy
+            quantity:
+              avg_private_subsidy: 'private_subsidy::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_teach_mat
+            quantity:
+              avg_private_teach_mat: 'private_teach_mat::int'::int
+            metrics:
+              - 'avg'
+
+          - # private_tech
+            quantity:
+              avg_private_tech: 'private_tech::int'::int
+            metrics:
+              - 'avg'
+
+          - # prog_alimentos
+            quantity:
+              avg_prog_alimentos: 'prog_alimentos::int'::int
+            metrics:
+              - 'avg'
+
+          - # recreation
+            quantity:
+              avg_recreation: 'recreation::int'::int
+            metrics:
+              - 'avg'
+
+          - # spec_need_handrail
+            quantity:
+              avg_spec_need_handrail: 'spec_need_handrail::int'::int
+            metrics:
+              - 'avg'
+
+          - # support_class
+            quantity:
+              avg_support_class: 'support_class::int'::int
+            metrics:
+              - 'avg'
+
+          - # support_psych
+            quantity:
+              avg_support_psych: 'support_psych::int'::int
+            metrics:
+              - 'avg'
+
+          - # toilet
+            quantity:
+              avg_toilet: toilet::int
+            metrics:
+              - 'avg'
+
+          - # toilet_pit
+            quantity:
+              avg_toilet_pit: toilet_pit::int
+            metrics:
+              - 'avg'
+
+          - # toilet_septic
+            quantity:
+              avg_toilet_septic: toilet_septic::int
+            metrics:
+              - 'avg'
+
+          - # toilet_no_works
+            quantity:
+              avg_toilet_no_works: toilet_no_works::int
+            metrics:
+              - 'avg'
+
+          - # vaso_leche
+            quantity:
+              avg_vaso_leche: 'vaso_leche::int'::int
+            metrics:
+              - 'avg'
+
+          - # water_carry
+            quantity:
+              avg_water_carry: 'water_carry::int'::int
+            metrics:
+              - 'avg'
+
+          - # water_pipe
+            quantity:
+              avg_water_pipe: 'water_pipe::int'::int
+            metrics:
+              - 'avg'
+
+          - # water_tank
+            quantity:
+              avg_water_tank: 'water_tank::int'::int
+            metrics:
+              - 'avg'
+
+          - # water_well
+            quantity:
+              avg_water_well: 'water_well::int'::int
+            metrics:
+              - 'avg'
+
+          - # water_pump
+            quantity:
+              avg_water_pump: 'water_pump::int'::int
+            metrics:
+              - 'avg'
+
+        intervals: ['1y', '3y', 'all']
+
+        groups:
+          - 'entity_id'
+
+    -
+        prefix: 'sch_cat'
+        from_obj: |
+          (select student::int as entity_id, * from semantic.events_student st join semantic.events_school sc
+           using (event_date, school)
+           where length(student) > 3 and length(student) < 9) as dropouts
+          
+        knowledge_date_column: 'event_date'
+
+        categoricals_imputation:
+            all:
+              type: 'mean'
+
+        categoricals:
+            -
+                column: birth_certificate
+                choice_query: 'select distinct birth_certificate from semantic.events_school'
+                metrics:
+                    - 'avg'
+                    - 'max'
+
+            -
+                column: disability_id
+                choice_query: 'select distinct disability_id from semantic.events_school'
+                metrics:
+                    - 'avg'
+                    - 'max'
+
+            -
+                column: economic_activity_id
+                choice_query: 'select distinct economic_activity_id from semantic.events_school'
+                metrics:
+                    - 'avg'
+                    - 'max'
+
+            -
+                column: nation_id
+                choice_query: 'select distinct nation_id from semantic.events_school'
+                metrics:
+                    - 'avg'
+                    - 'max'
+
+            -
+                column: native_id
+                choice_query: 'select distinct native_id from semantic.events_school'
+                metrics:
+                    - 'avg'
+                    - 'max'
+
+        intervals: ['1y', '3y', 'all']
+
+        groups:
+            - 'entity_id'
+
+    -
+        prefix: 'geo'
+        from_obj: |
+          (select student::int as entity_id, * from results_dssg_2018.features_one_hot where length(student) > 3 and length(student) < 9) as dropouts
+
+        knowledge_date_column: 'event_date'
+
+        aggregates_imputation:
+             all:
+              type: 'constant'
+              value: 0 
+
+        aggregates:
+          - # dept santa ana
+            quantity: 
+              d_santa_ana: departamento_santa_ana::int
+            metrics:
+              - 'max'
+
+          - # dept sonsonate
+            quantity: 
+              d_sonsonate: departamento_sonsonate::int
+            metrics:
+              - 'max'
+
+          - # dept usulutan
+            quantity: 
+              d_usulutan: departamento_usulutan::int
+            metrics:
+              - 'max'   
+
+          - # dept chalatenango
+            quantity: 
+              d_chalatenango: departamento_chalatenango::int
+            metrics:
+              - 'max' 
+
+          - # dept la_union
+            quantity: 
+              d_la_union: departamento_la_union::int
+            metrics:
+              - 'max' 
+
+          - # departamento_san_vicente
+            quantity: 
+              d_san_vicente: departamento_san_vicente::int
+            metrics:
+              - 'max' 
+
+          - # departamento_morazan
+            quantity: 
+              d_morazan: departamento_morazan::int
+            metrics:
+              - 'max'
+
+          - # departamento_la_libertad
+            quantity: 
+              d_la_libertad: departamento_la_libertad::int
+            metrics:
+              - 'max'
+
+          - # departamento_ahuachapan
+            quantity: 
+              d_ahuachapan: departamento_ahuachapan::int
+            metrics:
+              - 'max'
+
+          - # departamento_la_paz
+            quantity: 
+              d_la_paz: departamento_la_paz::int
+            metrics:
+              - 'max'
+
+          - # departamento_extranjero
+            quantity: 
+              d_extranjero: departamento_extranjero::int
+            metrics:
+              - 'max'
+
+          - # departamento_cabanas
+            quantity: 
+              d_cabanas: departamento_cabañas::int
+            metrics:
+              - 'max'
+
+          - # departamento_cuscatlan
+            quantity: 
+              d_cuscatlan: departamento_cuscatlan::int
+            metrics:
+              - 'max'
+
+          - # departamento_san_salvador
+            quantity: 
+              d_san_salvador: departamento_san_salvador::int
+            metrics:
+              - 'max'
+
+          - # departamento_san_miguel
+            quantity: 
+              d_san_miguel: departamento_san_miguel::int
+            metrics:
+              - 'max'
+
+          - # municipio_nahulingo
+            quantity: 
+              m_nahulingo: municipio_nahulingo::int
+            metrics:
+              - 'max'
+
+          - # municipio_yoloaiquin
+            quantity: 
+              m_yoloaiquin: municipio_yoloaiquin::int
+            metrics:
+              - 'max'
+
+          - # municipio_meanguera
+            quantity: 
+              m_meanguera: municipio_meanguera::int
+            metrics:
+              - 'max'
+
+          - # municipio_huizucar
+            quantity: 
+              m_huizucar: municipio_huizucar::int
+            metrics:
+              - 'max'
+
+          - # municipio_zaragoza
+            quantity: 
+              m_zaragoza: municipio_zaragoza::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_rafael
+            quantity: 
+              m_san_rafael: municipio_san_rafael::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_dionisio
+            quantity: 
+              m_san_dionisio: municipio_san_dionisio::int
+            metrics:
+              - 'max'
+
+          - # municipio_jiquilisco
+            quantity: 
+              m_jiquilisco: municipio_jiquilisco::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_paisnal
+            quantity: 
+              m_el_paisnal: municipio_el_paisnal::int
+            metrics:
+              - 'max'
+
+          - # municipio_dulce_nombre_de_maria
+            quantity: 
+              m_dulce_nombre_de_maria: municipio_dulce_nombre_de_maria::int
+            metrics:
+              - 'max'
+
+          - # municipio_armenia
+            quantity: 
+              m_armeni: municipio_armenia::int
+            metrics:
+              - 'max'
+
+          - # municipio_chilanga
+            quantity: 
+              m_chilanga: municipio_chilanga::int
+            metrics:
+              - 'max'
+
+          - # municipio_ereguayquin
+            quantity: 
+              m_ereguayquin: municipio_ereguayquin::int
+            metrics:
+              - 'max'
+
+          - # municipio_berlin
+            quantity: 
+              m_berlin: municipio_berlin::int
+            metrics:
+              - 'max'
+
+          - # municipio_sesori
+            quantity: 
+              m_sesori: municipio_sesori::int
+            metrics:
+              - 'max'
+
+          - # municipio_nueva_trinidad
+            quantity: 
+              m_nueva_trinidad: municipio_nueva_trinidad::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_juan_opico
+            quantity: 
+              m_san_juan_opico: municipio_san_juan_opico::int
+            metrics:
+              - 'max'
+
+          - # municipio_santiago_de_maria
+            quantity: 
+              m_santiago_de_maria: municipio_santiago_de_maria::int
+            metrics:
+              - 'max'
+
+          - # municipio_intipuca
+            quantity: 
+              m_intipuca: municipio_intipuca::int
+            metrics:
+              - 'max'
+
+          - # municipio_comalapa
+            quantity: 
+              m_comalapa: municipio_comalapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_luis_la_herradura
+            quantity: 
+              m_san_luis_la_herradura: municipio_san_luis_la_herradura::int
+            metrics:
+              - 'max'
+
+          - # municipio_santiago_nonualco
+            quantity: 
+              m_santiago_nonualco: municipio_santiago_nonualco::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_cristobal
+            quantity: 
+              m_san_cristobal: municipio_san_cristobal::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_pedro_puxtla
+            quantity: 
+              m_san_pedro_puxtla: municipio_san_pedro_puxtla::int
+            metrics:
+              - 'max'
+
+          - # municipio_nejapa
+            quantity: 
+              m_nejapa: municipio_nejapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_javier
+            quantity: 
+              m_san_francisco_javier: municipio_san_francisco_javier::int
+            metrics:
+              - 'max'
+
+          - # municipio_la_laguna
+            quantity: 
+              m_la_laguna: municipio_la_laguna::int
+            metrics:
+              - 'max'
+
+          - # municipio_pasaquina
+            quantity: 
+              m_pasaquina: municipio_pasaquina::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jorge
+            quantity: 
+              m_san_jorg: municipio_san_jorge::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_fernando
+            quantity: 
+              m_san_fernando: municipio_san_fernando::int
+            metrics:
+              - 'max'
+
+          - # municipio_jerusalen
+            quantity: 
+              m_jerusalen: municipio_jerusalen::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_gotera
+            quantity: 
+              m_san_francisco_gotera: municipio_san_francisco_gotera::int
+            metrics:
+              - 'max'
+
+          - # municipio_la_reina
+            quantity: 
+              m_la_reina: municipio_la_reina::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_rosa_de_lima
+            quantity: 
+              m_santa_rosa_de_lima: municipio_santa_rosa_de_lima::int
+            metrics:
+              - 'max'
+
+          - # municipio_las_vueltas
+            quantity: 
+              m_las_vueltas: municipio_las_vueltas::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_cruz_michapa
+            quantity: 
+              m_santa_cruz_michapa: municipio_santa_cruz_michapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_ignacio
+            quantity: 
+              m_san_ignacio: municipio_san_ignacio::int
+            metrics:
+              - 'max'
+
+          - # municipio_joateca
+            quantity: 
+              m_joateca: municipio_joateca::int
+            metrics:
+              - 'max'
+
+          - # municipio_mercedes_la_ceiba
+            quantity: 
+              m_mercedes_la_ceiba: municipio_mercedes_la_ceiba::int
+            metrics:
+              - 'max'
+
+          - # municipio_uluazapa
+            quantity: 
+              m_uluazapa: municipio_uluazapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_metapan
+            quantity: 
+              m_metapan: municipio_metapan::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_isidro_labrador
+            quantity: 
+              m_san_isidro_labrador: municipio_san_isidro_labrador::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_juan_nonualco
+            quantity: 
+              m_san_juan_nonualco: municipio_san_juan_nonualco::int
+            metrics:
+              - 'max'
+
+          - # municipio_cuscatancingo
+            quantity: 
+              m_cuscatancingo: municipio_cuscatancingo::int
+            metrics:
+              - 'max'
+
+          - # municipio_colon
+            quantity: 
+              m_colon: municipio_colon::int
+            metrics:
+              - 'max'
+
+          - # municipio_estanzuelas
+            quantity: 
+              m_estanzuelas: municipio_estanzuelas::int
+            metrics:
+              - 'max'
+
+          - # municipio_turin
+            quantity: 
+              m_turin: municipio_turin::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_miguel
+            quantity: 
+              santa_ana: municipio_san_miguel::int
+            metrics:
+              - 'max'
+
+          - # municipio_jucuaran
+            quantity: 
+              m_jucuaran: municipio_jucuaran::int
+            metrics:
+              - 'max'
+
+          - # municipio_torola
+            quantity: 
+              m_torola: municipio_torola::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_sauce
+            quantity: 
+              m_el_sauce: municipio_el_sauce::int
+            metrics:
+              - 'max'
+
+          - # municipio_santo_domingo
+            quantity: 
+              m_santo_domingo: municipio_santo_domingo::int
+            metrics:
+              - 'max'
+
+          - # municipio_santiago_texacuangos
+            quantity: 
+              m_santiago_texacuangos: municipio_santiago_texacuangos::int
+            metrics:
+              - 'max'
+
+          - # municipio_dolores
+            quantity: 
+              m_dolores: municipio_dolores::int
+            metrics:
+              - 'max'
+
+          - # municipio_sonsonate
+            quantity: 
+              m_sonsonate: municipio_sonsonate::int
+            metrics:
+              - 'max'
+
+          - # municipio_lislique
+            quantity: 
+              m_lislique: municipio_lislique::int
+            metrics:
+              - 'max'
+
+          - # municipio_jujutla
+            quantity: 
+              m_jujutla: municipio_jujutla::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_carlos
+            quantity: 
+              m_san_carlos: municipio_san_carlos::int
+            metrics:
+              - 'max'
+
+          - # municipio_suchitoto
+            quantity: 
+              m_suchitoto: municipio_suchitoto::int
+            metrics:
+              - 'max'
+
+          - # municipio_carolina
+            quantity: 
+              m_carolina: municipio_carolina::int
+            metrics:
+              - 'max'
+
+          - # municipio_apastepeque
+            quantity: 
+              m_apastepeque: municipio_apastepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_tepecoyo
+            quantity: 
+              m_tepecoyo: municipio_tepecoyo::int
+            metrics:
+              - 'max'
+
+          - # municipio_lolotiquillo
+            quantity: 
+              m_lolotiquillo: municipio_lolotiquillo::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_rafael_obrajuelo
+            quantity: 
+              m_san_rafael_obrajuelo: municipio_san_rafael_obrajuelo::int
+            metrics:
+              - 'max'
+
+          - # municipio_oratorio_de_concepcion
+            quantity: 
+              m_oratorio_de_concepcion: municipio_oratorio_de_concepcion::int
+            metrics:
+              - 'max'
+
+          - # municipio_acajutla
+            quantity: 
+              m_acajutla: municipio_acajutla::int
+            metrics:
+              - 'max'
+
+          - # municipio_ahuachapan
+            quantity: 
+              m_ahuachapan: municipio_ahuachapan::int
+            metrics:
+              - 'max'
+
+          - # municipio_caluco
+            quantity: 
+              m_caluco: municipio_caluco::int
+            metrics:
+              - 'max'
+
+          - # municipio_sacacoyo
+            quantity: 
+              m_sacacoyo: municipio_sacacoyo::int
+            metrics:
+              - 'max'
+
+          - # municipio_tapalhuaca
+            quantity: 
+              m_tapalhuaca: municipio_tapalhuaca::int
+            metrics:
+              - 'max'
+
+          - # municipio_agua_caliente
+            quantity: 
+              m_agua_caliente: municipio_agua_caliente::int
+            metrics:
+              - 'max'
+
+          - # municipio_ciudad_delgado
+            quantity: 
+              m_ciudad_delgado: municipio_ciudad_delgado::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_marcos
+            quantity: 
+              m_san_marcos: municipio_san_marcos::int
+            metrics:
+              - 'max'
+
+          - # municipio_moncagua
+            quantity: 
+              m_moncagua: municipio_moncagua::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_juan_talpa
+            quantity: 
+              m_san_juan_talpa: municipio_san_juan_talpa::int
+            metrics:
+              - 'max'
+
+          - # municipio_chirilagua
+            quantity: 
+              m_chirilagua: municipio_chirilagua::int
+            metrics:
+              - 'max'
+
+          - # municipio_jayaque
+            quantity: 
+              m_jayaque: municipio_jayaque::int
+            metrics:
+              - 'max'
+
+          - # municipio_tamanique
+            quantity: 
+              m_tamanique: municipio_tamanique::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_sebastian
+            quantity: 
+              m_san_sebastian: municipio_san_sebastian::int
+            metrics:
+              - 'max'
+
+          - # municipio_ilobasco
+            quantity: 
+              m_ilobasco: municipio_ilobasco::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_isidro
+            quantity: 
+              m_san_isidro: municipio_san_isidro::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_emigdio
+            quantity: 
+              m_san_emigdio: municipio_san_emigdio::int
+            metrics:
+              - 'max'
+
+          - # municipio_puerto_el_triunfo
+            quantity: 
+              m_puerto_el_triunfo: municipio_puerto_el_triunfo::int
+            metrics:
+              - 'max'
+
+          - # municipio_santo_tomas
+            quantity: 
+              m_santo_tomas: municipio_santo_tomas::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_carmen
+            quantity: 
+              m_el_carmen: municipio_el_carmen::int
+            metrics:
+              - 'max'
+
+          - # municipio_sociedad
+            quantity: 
+              m_sociedad: municipio_sociedad::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_clara
+            quantity: 
+              m_santa_clara: municipio_santa_clara::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_refugio
+            quantity: 
+              m_el_refugio: municipio_el_refugio::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_rosario
+            quantity: 
+              m_el_rosario: municipio_el_rosario::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_pedro_perulapan
+            quantity: 
+              m_san_pedro_perulapan: municipio_san_pedro_perulapan::int
+            metrics:
+              - 'max'
+
+          - # municipio_concepcion_batres
+            quantity: 
+              m_concepcion_batres: municipio_concepcion_batres::int
+            metrics:
+              - 'max'
+
+          - # municipio_poloros
+            quantity: 
+              m_poloros: municipio_poloros::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_martin
+            quantity: 
+              m_san_martin: municipio_san_martin::int
+            metrics:
+              - 'max'
+
+          - # municipio_alegria
+            quantity: 
+              m_alegria: municipio_alegria::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_luis_del_carmen
+            quantity: 
+              m_san_luis_del_carmen: municipio_san_luis_del_carmen::int
+            metrics:
+              - 'max'
+
+          - # municipio_monte_san_juan
+            quantity: 
+              m_monte_san_juan: municipio_monte_san_juan::int
+            metrics:
+              - 'max'
+
+          - # municipio_chinameca
+            quantity: 
+              m_chinameca: municipio_chinameca::int
+            metrics:
+              - 'max'
+
+          - # municipio_arambala
+            quantity: 
+              m_arambala: municipio_arambala::int
+            metrics:
+              - 'max'
+
+          - # municipio_izalco
+            quantity: 
+              m_izalco: municipio_izalco::int
+            metrics:
+              - 'max'
+
+          - # municipio_guaymango
+            quantity: 
+              m_guaymango: municipio_guaymango::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_bartolome_perulapia
+            quantity: 
+              m_san_bartolome_perulapia: municipio_san_bartolome_perulapia::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_pedro_nonualco
+            quantity: 
+              m_san_pedro_nonualco: municipio_san_pedro_nonualco::int
+            metrics:
+              - 'max'
+
+          - # municipio_apaneca
+            quantity: 
+              m_apaneca: municipio_apaneca::int
+            metrics:
+              - 'max'
+
+          - # municipio_delicias_de_concepcion
+            quantity: 
+              m_delicias_de_concepcion: municipio_delicias_de_concepcion::int
+            metrics:
+              - 'max'
+
+          - # municipio_necesita_revision
+            quantity: 
+              m_necesita_revision: municipio_necesita_revision::int
+            metrics:
+              - 'max'
+
+          - # municipio_jocoaitique
+            quantity: 
+              m_jocoaitique: municipio_jocoaitique::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_carrizal
+            quantity: 
+              m_el_carrizal: municipio_el_carrizal::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_morazan
+            quantity: 
+              m_san_francisco_morazan: municipio_san_francisco_morazan::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_paraiso
+            quantity: 
+              m_el_paraiso: municipio_el_paraiso::int
+            metrics:
+              - 'max'
+
+          - # municipio_rosario_de_mora
+            quantity: 
+              m_rosario_de_mora: municipio_rosario_de_mora::int
+            metrics:
+              - 'max'
+
+          - # municipio_potonico
+            quantity: 
+              m_potonico: municipio_potonico::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio
+            quantity: 
+              m_san_antonio: municipio_san_antonio::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_rosa_guachipilin
+            quantity: 
+              m_santa_rosa_guachipilin: municipio_santa_rosa_guachipilin::int
+            metrics:
+              - 'max'
+
+          - # municipio_tecoluca
+            quantity: 
+              m_tecoluca: municipio_tecoluca::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_menendez
+            quantity: 
+              m_san_francisco_menendez: municipio_san_francisco_menendez::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio_masahuat
+            quantity: 
+              m_san_antonio_masahuat: municipio_san_antonio_masahuat::int
+            metrics:
+              - 'max'
+
+          - # municipio_nueva_esparta
+            quantity: 
+              m_nueva_esparta: municipio_nueva_esparta::int
+            metrics:
+              - 'max'
+
+          - # municipio_lolotique
+            quantity: 
+              m_lolotique: municipio_lolotique::int
+            metrics:
+              - 'max'
+
+          - # municipio_cojutepeque
+            quantity: 
+              m_cojutepeque: municipio_cojutepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_meanguera_del_golfo
+            quantity: 
+              m_meanguera_del_golfo: municipio_meanguera_del_golfo::int
+            metrics:
+              - 'max'
+
+          - # municipio_nuevo_cuscatlan
+            quantity: 
+              m_nuevo_cuscatlan: municipio_nuevo_cuscatlan::int
+            metrics:
+              - 'max'
+
+          - # municipio_ojos_de_agua
+            quantity: 
+              m_ojos_de_agua: municipio_ojos_de_agua::int
+            metrics:
+              - 'max'
+
+          - # municipio_tecapan
+            quantity: 
+              m_tecapan: municipio_tecapan::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_elena
+            quantity: 
+              m_santa_elena: municipio_santa_elena::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_lempa
+            quantity: 
+              m_san_francisco_lempa: municipio_san_francisco_lempa::int
+            metrics:
+              - 'max'
+
+          - # municipio_comacaran
+            quantity: 
+              m_comacaran: municipio_comacaran::int
+            metrics:
+              - 'max'
+
+          - # municipio_candelaria
+            quantity: 
+              m_candelaria: municipio_candelaria::int
+            metrics:
+              - 'max'
+
+          - # municipio_soyapango
+            quantity: 
+              m_soyapango: municipio_soyapango::int
+            metrics:
+              - 'max'
+
+          - # municipio_ciudad_el_triunfo
+            quantity: 
+              m_ciudad_el_triunfo: municipio_ciudad_el_triunfo::int
+            metrics:
+              - 'max'
+
+          - # municipio_santiago_de_la_frontera
+            quantity: 
+              m_santiago_de_la_frontera: municipio_santiago_de_la_frontera::int
+            metrics:
+              - 'max'
+
+          - # municipio_panchimalco
+            quantity: 
+              m_panchimalco: municipio_panchimalco::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio_del_monte
+            quantity: 
+              m_san_antonio_del_monte: municipio_san_antonio_del_monte::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_cruz_analquito
+            quantity: 
+              m_santa_cruz_analquito: municipio_santa_cruz_analquito::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_matias
+            quantity: 
+              m_san_matias: municipio_san_matias::int
+            metrics:
+              - 'max'
+
+          - # municipio_guatajiagua
+            quantity: 
+              m_guatajiagua: municipio_guatajiagua::int
+            metrics:
+              - 'max'
+
+          - # municipio_talnique
+            quantity: 
+              m_talnique: municipio_talnique::int
+            metrics:
+              - 'max'
+
+          - # municipio_nuevo_eden_de_san_juan
+            quantity: 
+              m_nuevo_eden_de_san_juan: municipio_nuevo_eden_de_san_juan::int
+            metrics:
+              - 'max'
+
+          - # municipio_quezaltepeque
+            quantity: 
+              m_quezaltepeque: municipio_quezaltepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_chalatenango
+            quantity: 
+              m_chalatenango: municipio_chalatenango::int
+            metrics:
+              - 'max'
+
+          - # municipio_anamoros
+            quantity: 
+              m_anamoros: municipio_anamoros::int
+            metrics:
+              - 'max'
+
+          - # municipio_ciudad_barrios
+            quantity: 
+              m_ciudad_barrios: municipio_ciudad_barrios::int
+            metrics:
+              - 'max'
+
+          - # municipio_tenancingo
+            quantity: 
+              m_tenancingo: municipio_tenancingo::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_pablo_tacachico
+            quantity: 
+              m_san_pablo_tacachico: municipio_san_pablo_tacachico::int
+            metrics:
+              - 'max'
+
+          - # municipio_nombre_de_jesus
+            quantity: 
+              m_nombre_de_jesus: municipio_nombre_de_jesus::int
+            metrics:
+              - 'max'
+
+          - # municipio_bolivar
+            quantity: 
+              m_bolivar: municipio_bolivar::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_porvenir
+            quantity: 
+              m_el_porvenir: municipio_el_porvenir::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_luis_talpa
+            quantity: 
+              m_san_luis_talpa: municipio_san_luis_talpa::int
+            metrics:
+              - 'max'
+
+          - # municipio_paraiso_de_osorio
+            quantity: 
+              m_paraiso_de_osorio: municipio_paraiso_de_osorio::int
+            metrics:
+              - 'max'
+
+          - # municipio_aguilares
+            quantity: 
+              m_aguilares: municipio_aguilares::int
+            metrics:
+              - 'max'
+
+          - # municipio_nueva_granada
+            quantity: 
+              m_nueva_granada: municipio_nueva_granada::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jose_cancasque
+            quantity: 
+              m_san_jose_cancasque: municipio_san_jose_cancasque::int
+            metrics:
+              - 'max'
+
+          - # municipio_mejicanos
+            quantity: 
+              m_mejicanos: municipio_mejicanos::int
+            metrics:
+              - 'max'
+
+          - # municipio_candelaria_de_la_frontera
+            quantity: 
+              m_candelaria_de_la_frontera: municipio_candelaria_de_la_frontera::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_lorenzo
+            quantity: 
+              m_san_lorenzo: municipio_san_lorenzo::int
+            metrics:
+              - 'max'
+
+          - # municipio_apopao
+            quantity: 
+              m_apopa: municipio_apopa::int
+            metrics:
+              - 'max'
+
+          - # municipio_comasagua
+            quantity: 
+              m_comasagua: municipio_comasagua::int
+            metrics:
+              - 'max'
+
+          - # municipio_nueva_concepcion
+            quantity: 
+              m_nueva_concepcion: municipio_nueva_concepcion::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_sebastian_salitrillo
+            quantity: 
+              m_san_sebastian_salitrillo: municipio_san_sebastian_salitrillo::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_vicente
+            quantity: 
+              m_san_vicente: municipio_san_vicente::int
+            metrics:
+              - 'max'
+
+          - # municipio_santo_domingo_de_guzman
+            quantity: 
+              m_santo_domingo_de_guzman: municipio_santo_domingo_de_guzman::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_luis_de_la_reina
+            quantity: 
+              m_san_luis_de_la_reina: municipio_san_luis_de_la_reina::int
+            metrics:
+              - 'max'
+
+          - # municipio_olocuilta
+            quantity: 
+              m_olocuilta: municipio_olocuilta::int
+            metrics:
+              - 'max'
+
+          - # municipio_verapaz
+            quantity: 
+              m_verapaz: municipio_verapaz::int
+            metrics:
+              - 'max'
+
+          - # municipio_azacualpa
+            quantity: 
+              m_azacualpa: municipio_azacualpa::int
+            metrics:
+              - 'max'
+
+          - # municipio_juayua
+            quantity: 
+              m_juayua: municipio_juayua::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio_los_ranchos
+            quantity: 
+              m_san_antonio_los_ranchos: municipio_san_antonio_los_ranchos::int
+            metrics:
+              - 'max'
+
+          - # municipio_cuisnahuat
+            quantity: 
+              m_cuisnahuat: municipio_cuisnahuat::int
+            metrics:
+              - 'max'
+
+          - # municipio_atiquizaya
+            quantity: 
+              m_atiquizaya: municipio_atiquizaya::int
+            metrics:
+              - 'max'
+
+          - # municipio_ilopango
+            quantity: 
+              m_ilopango: municipio_ilopango::int
+            metrics:
+              - 'max'
+
+          - # municipio_la_union
+            quantity: 
+              m_la_union: municipio_la_union::int
+            metrics:
+              - 'max'
+
+          - # municipio_guazapa
+            quantity: 
+              m_guazapa: municipio_guazapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_cinquera
+            quantity: 
+              m_cinquera: municipio_cinquera::int
+            metrics:
+              - 'max'
+
+          - # municipio_concepcion_de_oriente
+            quantity: 
+              m_concepcion_de_oriente: municipio_concepcion_de_oriente::int
+            metrics:
+              - 'max'
+
+          - # municipio_yamabal
+            quantity: 
+              m_yamabal: municipio_yamabal::int
+            metrics:
+              - 'max'
+
+          - # municipio_ayutuxtepeque
+            quantity: 
+              m_ayutuxtepeque: municipio_ayutuxtepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_ciudad_arce
+            quantity: 
+              m_ciudad_arce: municipio_ciudad_arce::int
+            metrics:
+              - 'max'
+
+          - # municipio_nueva_guadalupe
+            quantity: 
+              m_nueva_guadalupe: municipio_nueva_guadalupe::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_maria
+            quantity: 
+              m_santa_maria: municipio_santa_maria::int
+            metrics:
+              - 'max'
+
+          - # municipio_gualococti
+            quantity: 
+              m_gualococti: municipio_gualococti::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_pedro_masahuat
+            quantity: 
+              m_san_pedro_masahuat: municipio_san_pedro_masahuat::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_congo
+            quantity: 
+              m_el_congo: municipio_el_congo::int
+            metrics:
+              - 'max'
+
+          - # municipio_la_libertad
+            quantity: 
+              m_la_libertad: municipio_la_libertad::int
+            metrics:
+              - 'max'
+
+          - # municipio_antiguo_cuscatlan
+            quantity: 
+              m_antiguo_cuscatlan: municipio_antiguo_cuscatlan::int
+            metrics:
+              - 'max'
+
+          - # municipio_chalchuapa
+            quantity: 
+              m_chalchuapa: municipio_chalchuapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_guadalupe
+            quantity: 
+              m_guadalupe: municipio_guadalupe::int
+            metrics:
+              - 'max'
+
+          - # municipio_masahuat
+            quantity: 
+              m_masahuat: municipio_masahuat::int
+            metrics:
+              - 'max'
+
+          - # municipio_tejutla
+            quantity: 
+              m_tejutla: municipio_tejutla::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_alejo
+            quantity: 
+              m_san_alejo: municipio_san_alejo::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_ana
+            quantity: 
+              m_santa_ana: municipio_santa_ana::int
+            metrics:
+              - 'max'
+
+          - # municipio_usulutan
+            quantity: 
+              m_usulutan: municipio_usulutan::int
+            metrics:
+              - 'max'
+
+          - # municipio_ishuatan
+            quantity: 
+              m_ishuatan: municipio_ishuatan::int
+            metrics:
+              - 'max'
+
+          - # municipio_cuyultitan
+            quantity: 
+              m_cuyultitan: municipio_cuyultitan::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio_pajonal
+            quantity: 
+              m_san_antonio_pajonal: municipio_san_antonio_pajonal::int
+            metrics:
+              - 'max'
+
+          - # municipio_sonzacate
+            quantity: 
+              m_sonzacate: municipio_sonzacate::int
+            metrics:
+              - 'max'
+
+          - # municipio_jocoro
+            quantity: 
+              m_jocoro: municipio_jocoro::int
+            metrics:
+              - 'max'
+
+          - # municipio_concepcion_quezaltepeque
+            quantity: 
+              m_concepcion_quezaltepeque: municipio_concepcion_quezaltepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_salvador
+            quantity: 
+              m_san_salvador: municipio_san_salvador::int
+            metrics:
+              - 'max'
+
+          - # municipio_centroamericano
+            quantity: 
+              m_centroamericano: municipio_centroamericano::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_francisco_chinameca
+            quantity: 
+              m_san_francisco_chinameca: municipio_san_francisco_chinameca::int
+            metrics:
+              - 'max'
+
+          - # municipio_guacotecti
+            quantity: 
+              m_guacotecti: municipio_guacotecti::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_ildefonso
+            quantity: 
+              m_san_ildefonso: municipio_san_ildefonso::int
+            metrics:
+              - 'max'
+
+          - # municipio_yayantique
+            quantity: 
+              m_yayantique: municipio_yayantique::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_buenaventura
+            quantity: 
+              m_san_buenaventura: municipio_san_buenaventura::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_tecla
+            quantity: 
+              m_santa_tecla: municipio_santa_tecla::int
+            metrics:
+              - 'max'
+
+          - # municipio_nahuizalco
+            quantity: 
+              m_nahuizalco: municipio_nahuizalco::int
+            metrics:
+              - 'max'
+
+          - # municipio_coatepeque
+            quantity: 
+              m_coatepeque: municipio_coatepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_julian
+            quantity: 
+              m_san_julian: municipio_san_julian::int
+            metrics:
+              - 'max'
+
+          - # municipio_tacuba
+            quantity: 
+              m_tacuba: municipio_tacuba::int
+            metrics:
+              - 'max'
+
+          - # municipio_teotepeque
+            quantity: 
+              m_teotepeque: municipio_teotepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_salcoatitan
+            quantity: 
+              m_salcoatitan: municipio_salcoatitan::int
+            metrics:
+              - 'max'
+
+          - # municipio_la_palma
+            quantity: 
+              m_la_palma: municipio_la_palma::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_cayetano_istepeque
+            quantity: 
+              m_san_cayetano_istepeque: municipio_san_cayetano_istepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jose_guayabal
+            quantity: 
+              m_san_jose_guayabal: municipio_san_jose_guayabal::int
+            metrics:
+              - 'max'
+
+          - # municipio_sensembra
+            quantity: 
+              m_sensembra: municipio_sensembra::int
+            metrics:
+              - 'max'
+
+          - # municipio_conchagua
+            quantity: 
+              m_conchagua: municipio_conchagua::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_simon
+            quantity: 
+              m_san_simon: municipio_san_simon::int
+            metrics:
+              - 'max'
+
+          - # municipio_tejutepeque
+            quantity: 
+              m_tejutepeque: municipio_tejutepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_arcatao
+            quantity: 
+              m_arcatao: municipio_arcatao::int
+            metrics:
+              - 'max'
+
+          - # municipio_sensuntepeque
+            quantity: 
+              m_sensuntepeque: municipio_sensuntepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_agustin
+            quantity: 
+              m_san_agustin: municipio_san_agustin::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jose_las_flores
+            quantity: 
+             m_san_jose_las_flores: municipio_san_jose_las_flores::int
+            metrics:
+              - 'max'
+
+          - # municipio_yucuaiquin
+            quantity: 
+              m_yucuaiquin: municipio_yucuaiquin::int
+            metrics:
+              - 'max'
+
+          - # municipio_texistepeque
+            quantity: 
+              m_texistepeque: municipio_texistepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_ozatlan
+            quantity: 
+              m_ozatlan: municipio_ozatlan::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_catarina_masahuat
+            quantity: 
+              m_santa_catarina_masahuat: municipio_santa_catarina_masahuat::int
+            metrics:
+              - 'max'
+
+          - # municipio_victoria
+            quantity: 
+              m_victoria: municipio_victoria::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_rita
+            quantity: 
+              m_santa_rita: municipio_santa_rita::int
+            metrics:
+              - 'max'
+
+          - # municipio_zacatecoluca
+            quantity: 
+              m_zacatecoluca: municipio_zacatecoluca::int
+            metrics:
+              - 'max'
+
+          - # municipio_citala
+            quantity: 
+              m_citala: municipio_citala::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_antonio_de_la_cruz
+            quantity: 
+              m_san_antonio_de_la_cruz: municipio_san_antonio_de_la_cruz::int
+            metrics:
+              - 'max'
+
+          - # municipio_chiltiupan
+            quantity: 
+              m_chiltiupan: municipio_chiltiupan::int
+            metrics:
+              - 'max'
+
+          - # municipio_chapeltique
+            quantity: 
+              m_chapeltique: municipio_chapeltique::int
+            metrics:
+              - 'max'
+
+          - # municipio_cacaopera
+            quantity: 
+              m_cacaopera: municipio_cacaopera::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_transito
+            quantity: 
+              m_el_transito: municipio_el_transito::int
+            metrics:
+              - 'max'
+
+          - # municipio_tepetitan
+            quantity: 
+              m_tepetitan: municipio_tepetitan::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_juan_tepezontes
+            quantity: 
+              m_san_juan_tepezontes: municipio_san_juan_tepezontes::int
+            metrics:
+              - 'max'
+
+          - # municipio_el_divisadero
+            quantity: 
+              m_el_divisadero: municipio_el_divisadero::int
+            metrics:
+              - 'max'
+
+          - # municipio_mercedes_umana
+            quantity: 
+              m_mercedes_umana: municipio_mercedes_umaña::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_rafael_cedros
+            quantity: 
+              m_san_rafael_cedros: municipio_san_rafael_cedros::int
+            metrics:
+              - 'max'
+
+          - # municipio_tonacatepeque
+            quantity: 
+              m_tonacatepeque: municipio_tonacatepeque::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_miguel_de_mercedes
+            quantity: 
+              m_san_miguel_de_mercedes: municipio_san_miguel_de_mercedes::int
+            metrics:
+              - 'max'
+
+          - # municipio_jutiapa
+            quantity: 
+              m_jutiapa: municipio_jutiapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_corinto
+            quantity: 
+              m_corinto: municipio_corinto::int
+            metrics:
+              - 'max'
+
+          - # municipio_jucuapa
+            quantity: 
+              m_jucuapa: municipio_jucuapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_ataco
+            quantity: 
+              m_ataco: municipio_ataco::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_ramon
+            quantity: 
+              m_san_ramon: municipio_san_ramon::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_esteban_catarina
+            quantity: 
+              m_san_esteban_catarina: municipio_san_esteban_catarina::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_gerardo
+            quantity: 
+              m_san_gerardo: municipio_san_gerardo::int
+            metrics:
+              - 'max'
+
+          - # municipio_perquin
+            quantity: 
+              m_perquin: municipio_perquin::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jose_villanueva
+            quantity: 
+              m_san_jose_villanueva: municipio_san_jose_villanueva::int
+            metrics:
+              - 'max'
+
+          - # municipio_jicalapa
+            quantity: 
+              m_jicalapa: municipio_jicalapa::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_miguel_tepezontes
+            quantity: 
+              m_san_miguel_tepezontes: municipio_san_miguel_tepezontes::int
+            metrics:
+              - 'max'
+
+          - # municipio_quelepa
+            quantity: 
+              m_quelepa: municipio_quelepa::int
+            metrics:
+              - 'max'
+
+          - # municipio_santa_maria_ostuma
+            quantity: 
+              m_santa_maria_ostuma: municipio_santa_maria_ostuma::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_rafael_oriente
+            quantity: 
+              m_san_rafael_oriente: municipio_san_rafael_oriente::int
+            metrics:
+              - 'max'
+
+          - # municipio_california
+            quantity: 
+              m_california: municipio_california::int
+            metrics:
+              - 'max'
+
+          - # municipio_osicala
+            quantity: 
+              m_osicala: municipio_osicala::int
+            metrics:
+              - 'max'
+
+          - # municipio_san_jose
+            quantity: 
+              m_san_jose: municipio_san_jose::int
+            metrics:
+              - 'max'
+
+        intervals: ['1y', '5y']
+
+        groups:
+          - 'entity_id'
+
+
+feature_group_strategies: ['all']
+
+model_group_keys:
+     - 'class_path'
+     - 'parameters'
+     - 'feature_names'
+     - 'feature_groups'
+     - 'cohort_name'
+     - 'state'
+     - 'label_name'
+     - 'label_timespan'
+     - 'training_as_of_date_frequency'
+     - 'max_training_history'
+     - 'label_definition'
+     - 'experiment_type'
+
+grid_config:
+    'sklearn.dummy.DummyClassifier':
+        strategy: [most_frequent]
+    'sklearn.ensemble.RandomForestClassifier':
+        max_features: ['sqrt']
+        criterion: ['gini']
+        n_estimators: [500]
+        min_samples_split: [2, 10]
+        class_weight: [~]
+        max_depth: [5, 50]
+        n_jobs: [-1]
+    'sklearn.ensemble.RandomForestClassifier':
+        max_features: ['sqrt']
+        criterion: ['gini']
+        n_estimators: [100]
+        min_samples_split: [10]
+        class_weight: [~]
+        max_depth: [30]
+        n_jobs: [-1]
+    'sklearn.ensemble.ExtraTreesClassifier':
+        n_estimators: [100]
+        criterion: ['gini']
+        max_depth: [50]
+        max_features: ['sqrt']
+    'sklearn.tree.DecisionTreeClassifier':
+        max_depth: [2,10]
+        max_features: ['sqrt']
+        min_samples_split: [5]
+        criterion: ['gini']
+
+
+scoring:
+   sort_seed: 5
+   testing_metric_groups:
+       -
+          metrics: ['precision@', 'recall@']
+          thresholds:
+             percentiles: [1.0, 2.0, 3.0, 4.0, 5.0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
+             top_n: [1, 5, 10, 35, 50, 300, 500, 1000, 5000, 10000, 25000]
+   training_metric_groups:
+     -
+       metrics: [accuracy]
+     -
+       metrics: ['precision@', 'recall@']
+       thresholds:
+          percentiles: [1.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0]
+          top_n: [1, 5, 10, 25, 50, 100, 150, 300, 500, 1000, 1500]
