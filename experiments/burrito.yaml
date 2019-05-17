@@ -1,0 +1,121 @@
+version: 4
+
+entity: students
+
+grado: '*'
+
+temporal_splits:
+  data_starts: 2009-01-01
+  data_ends: 2018-01-01
+  train_window: [3y]
+  test_window: [0y]
+  label_window: [2y]
+  step: [1y]
+
+learners:
+  - algorithm: sklearn.ensemble.GradientBoostingClassifier
+    hyperparameters:
+      n_estimators: [1, 10, 100, 1000]
+      learning_rate: [0.001, 0.01, 0.05, 0.1, 0.5]
+      subsample: [0.1, 0.5, 1.0]
+      max_depth: [1, 5, 10, 20, 50]
+  - algorithm: sklearn.ensemble.RandomForestClassifier
+    hyperparameters:
+      max_depth: [5, 10, 20, 50]
+      n_estimators: [10, 100, 1000]
+      max_features: ['log2']
+      criterion: ['gini']
+      min_samples_split: [2, 5]
+      n_jobs: [-1]
+  - algorithm: sklearn.linear_model.LogisticRegression
+    hyperparameters:
+      penalty: ['l2']
+      C: [0.0001, 0.001, 0.01, 0.1, 1.0, 10]
+
+features: 
+    features_onehot: [departamento_santa_ana,departamento_sonsonate,departamento_usulutan,departamento_chalatenango,departamento_la_union,departamento_san_vicente,departamento_morazan,departamento_la_libertad,departamento_ahuachapan,departamento_la_paz,departamento_extranjero,departamento_cabañas,departamento_cuscatlan,departamento_san_salvador,departamento_san_miguel,municipio_nahulingo,municipio_yoloaiquin,municipio_meanguera,municipio_huizucar,municipio_zaragoza,municipio_san_rafael,municipio_san_dionisio,municipio_jiquilisco,municipio_el_paisnal,municipio_dulce_nombre_de_maria,municipio_armenia,municipio_chilanga,municipio_ereguayquin,municipio_berlin,municipio_sesori,municipio_nueva_trinidad,municipio_san_juan_opico,municipio_santiago_de_maria,municipio_intipuca,municipio_comalapa,municipio_san_luis_la_herradura,municipio_santiago_nonualco,municipio_san_cristobal,municipio_san_pedro_puxtla,municipio_nejapa,municipio_san_francisco_javier,municipio_la_laguna,municipio_pasaquina,municipio_san_jorge,municipio_san_fernando,municipio_jerusalen,municipio_san_francisco_gotera,municipio_la_reina,municipio_santa_rosa_de_lima,municipio_las_vueltas,municipio_santa_cruz_michapa,municipio_san_ignacio,municipio_joateca,municipio_mercedes_la_ceiba,municipio_uluazapa,municipio_metapan,municipio_san_isidro_labrador,municipio_san_juan_nonualco,municipio_cuscatancingo,municipio_colon,municipio_estanzuelas,municipio_turin,municipio_san_miguel,municipio_jucuaran,municipio_torola,municipio_el_sauce,municipio_santo_domingo,municipio_santiago_texacuangos,municipio_dolores,municipio_sonsonate,municipio_lislique,municipio_no_centroamericano,municipio_jujutla,municipio_san_carlos,municipio_suchitoto,municipio_carolina,municipio_apastepeque,municipio_tepecoyo,municipio_lolotiquillo,municipio_san_rafael_obrajuelo,municipio_oratorio_de_concepcion,municipio_acajutla,municipio_ahuachapan,municipio_caluco,municipio_sacacoyo,municipio_tapalhuaca,municipio_agua_caliente,municipio_ciudad_delgado,municipio_san_marcos,municipio_moncagua,municipio_san_juan_talpa,municipio_chirilagua,municipio_jayaque,municipio_tamanique,municipio_san_sebastian,municipio_ilobasco,municipio_san_isidro,municipio_san_emigdio,municipio_puerto_el_triunfo,municipio_santo_tomas,municipio_el_carmen,municipio_sociedad,municipio_santa_clara,municipio_el_refugio,municipio_el_rosario,municipio_san_pedro_perulapan,municipio_concepcion_batres,municipio_poloros,municipio_san_martin,municipio_alegria,municipio_san_luis_del_carmen,municipio_monte_san_juan,municipio_chinameca,municipio_arambala,municipio_izalco,municipio_guaymango,municipio_san_bartolome_perulapia,municipio_san_pedro_nonualco,municipio_apaneca,municipio_delicias_de_concepcion,municipio_necesita_revision,municipio_jocoaitique,municipio_el_carrizal,municipio_san_francisco_morazan,municipio_el_paraiso,municipio_rosario_de_mora,municipio_potonico,municipio_san_antonio,municipio_santa_rosa_guachipilin,municipio_tecoluca,municipio_san_francisco_menendez,municipio_san_antonio_masahuat,municipio_nueva_esparta,municipio_lolotique,municipio_cojutepeque,municipio_meanguera_del_golfo,municipio_nuevo_cuscatlan,municipio_ojos_de_agua,municipio_tecapan,municipio_santa_elena,municipio_san_francisco_lempa,municipio_comacaran,municipio_candelaria,municipio_soyapango,municipio_ciudad_el_triunfo,municipio_santiago_de_la_frontera,municipio_panchimalco,municipio_san_antonio_del_monte,municipio_santa_cruz_analquito,municipio_san_matias,municipio_guatajiagua,municipio_talnique,municipio_nuevo_eden_de_san_juan,municipio_quezaltepeque,municipio_chalatenango,municipio_anamoros,municipio_ciudad_barrios,municipio_tenancingo,municipio_san_pablo_tacachico,municipio_nombre_de_jesus,municipio_bolivar,municipio_el_porvenir,municipio_san_luis_talpa,municipio_paraiso_de_osorio,municipio_aguilares,municipio_nueva_granada,municipio_san_jose_cancasque,municipio_mejicanos,municipio_candelaria_de_la_frontera,municipio_san_lorenzo,municipio_apopa,municipio_comasagua,municipio_nueva_concepcion,municipio_san_sebastian_salitrillo,municipio_san_vicente,municipio_santo_domingo_de_guzman,municipio_san_luis_de_la_reina,municipio_olocuilta,municipio_verapaz,municipio_azacualpa,municipio_juayua,municipio_san_antonio_los_ranchos,municipio_cuisnahuat,municipio_atiquizaya,municipio_ilopango,municipio_la_union,municipio_guazapa,municipio_cinquera,municipio_concepcion_de_oriente,municipio_yamabal,municipio_ayutuxtepeque,municipio_ciudad_arce,municipio_nueva_guadalupe,municipio_santa_maria,municipio_gualococti,municipio_san_pedro_masahuat,municipio_el_congo,municipio_la_libertad,municipio_antiguo_cuscatlan,municipio_chalchuapa,municipio_guadalupe,municipio_masahuat,municipio_tejutla,municipio_san_alejo,municipio_santa_ana,municipio_usulutan,municipio_ishuatan,municipio_cuyultitan,municipio_san_antonio_pajonal,municipio_sonzacate,municipio_jocoro,municipio_concepcion_quezaltepeque,municipio_san_salvador,municipio_centroamericano,municipio_san_francisco_chinameca,municipio_guacotecti,municipio_san_ildefonso,municipio_yayantique,municipio_san_buenaventura,municipio_santa_tecla,municipio_nahuizalco,municipio_coatepeque,municipio_san_julian,municipio_tacuba,municipio_teotepeque,municipio_salcoatitan,municipio_la_palma,municipio_san_cayetano_istepeque,municipio_san_jose_guayabal,municipio_sensembra,municipio_conchagua,municipio_san_simon,municipio_tejutepeque,municipio_arcatao,municipio_sensuntepeque,municipio_san_agustin,municipio_san_jose_las_flores,municipio_yucuaiquin,municipio_texistepeque,municipio_ozatlan,municipio_santa_catarina_masahuat,municipio_victoria,municipio_santa_rita,municipio_zacatecoluca,municipio_citala,municipio_san_antonio_de_la_cruz,municipio_chiltiupan,municipio_chapeltique,municipio_cacaopera,municipio_el_transito,municipio_tepetitan,municipio_san_juan_tepezontes,municipio_el_divisadero,municipio_mercedes_umaña,municipio_san_rafael_cedros,municipio_tonacatepeque,municipio_san_miguel_de_mercedes,municipio_jutiapa,municipio_corinto,municipio_jucuapa,municipio_ataco,municipio_san_ramon,municipio_san_esteban_catarina,municipio_san_gerardo,municipio_perquin,municipio_san_jose_villanueva,municipio_jicalapa,municipio_san_miguel_tepezontes,municipio_quelepa,municipio_santa_maria_ostuma,municipio_san_rafael_oriente,municipio_california,municipio_osicala,municipio_san_jose]
+    features_timeaggregates: [overage1_1y_avg, overage1_2y_avg, overage1_3y_avg, 
+    overage1_1y_max, overage1_2y_max, overage1_3y_max, 
+    overage1_1y_min, overage1_2y_min, overage1_3y_min,
+    overage2_1y_avg, overage2_2y_avg, overage2_3y_avg, 
+    overage2_1y_max, overage2_2y_max, overage2_3y_max, 
+    overage2_1y_min, overage2_2y_min, overage2_3y_min,
+    repeats_1y_avg, repeats_2y_avg, repeats_3y_avg, 
+    repeats_1y_max, repeats_2y_max, repeats_3y_max, 
+    repeats_1y_min, repeats_2y_min, repeats_3y_min,
+    family_members_1y_avg, family_members_1y_max, family_members_1y_min,
+    family_members_2y_avg, family_members_2y_max, family_members_2y_min, 
+    family_members_3y_avg, family_members_3y_max, family_members_3y_min,
+    school_rural_1y_all, school_rural_1y_any, 
+    school_rural_2y_all, school_rural_2y_any, 
+    school_rural_3y_all, school_rural_3y_any,
+    municipio_count_1y_avg, municipio_count_1y_max, municipio_count_1y_min,
+    municipio_count_2y_avg, municipio_count_2y_max, municipio_count_2y_min, 
+    municipio_count_3y_avg, municipio_count_3y_max, municipio_count_3y_min,
+    school_public_1y_all, school_public_1y_any,
+    school_public_2y_all, school_public_2y_any,
+    school_public_3y_all, school_public_3y_any,
+    school_native_1y_all, school_native_1y_any, 
+    school_native_2y_all, school_native_2y_any,
+    school_native_3y_all, school_native_3y_any,
+    school_difference_1y_avg, school_difference_1y_max, school_difference_1y_min,
+    school_difference_2y_avg, school_difference_2y_max, school_difference_2y_min,
+    school_difference_3y_avg, school_difference_3y_max,school_difference_3y_min,
+    school_mismatch_1y_avg,school_mismatch_1y_max,school_mismatch_1y_min,
+    school_mismatch_2y_avg,school_mismatch_2y_max,school_mismatch_2y_min,
+    school_mismatch_3y_avg,school_mismatch_3y_max,school_mismatch_3y_min,
+    school_departamento_1y_count,school_departamento_2y_count,school_departamento_3y_count,
+    school_municipio_1y_count,school_municipio_2y_count,school_municipio_3y_count,
+    departamento_1y_count,departamento_2y_count,departamento_3y_count,
+    municipio_1y_count,municipio_2y_count,municipio_3y_count]
+    features_aggregate: [school_count,
+    school_owner_own_any, school_owner_own_all, 
+    school_owner_borrow_any, school_owner_borrow_all, 
+    school_owner_lease_any, school_owner_lease_all, 
+    school_owner_loan_any, school_owner_loan_all,
+    school_owner_other_any, school_owner_other_all,
+    school_electricitycompany_any, school_electricitycompany_all,
+    school_electricity_any, school_electricity_all]
+    features_imputed: [age, student_female, family_members, grado_code, school_mismatch, school_difference,
+    overage1, overage_bool, overage2, overage2_bool, repeats, repeats_bool,
+    school_public, school_rural, school_native, school_toilet]
+    
+labels:
+  - labeling.sql   
+
+comments: |
+  Note the following columns had missing values imputed to -1:
+    school_native_1y_all              1377
+    school_native_3y_any               984
+    school_toilet                    33118
+    departamento_2y_count              584
+    school_owner_own_any             33117
+    school_native_3y_all               984
+    school_owner_other_any           33117
+    school_owner_borrow_all          33117
+    school_electricity_any           33117
+    school_owner_other_all           33117
+    school_electricity_all           33117
+    school_owner_loan_all            33117
+    school_native                     3040
+    school_departamento_1y_count      1281
+    school_native_2y_all              1066
+    school_native_2y_any              1066
+    school_owner_own_all             33117
+    departamento_3y_count              530
+    school_owner_borrow_any          33117
+    school_departamento_3y_count       910
+    school_municipio_2y_count          982
+    municipio_1y_count                 798
+    municipio_2y_count                 584
+    school_owner_lease_any           33117
+    school_native_1y_any              1377
+    school_municipio_1y_count         1281
+    school_electricitycompany_any    33117
+    departamento_1y_count              798
+    school_electricitycompany_all    33117
+    school_owner_lease_all           33117
+    municipio_3y_count                 530
+    school_municipio_3y_count          910
+    school_departamento_2y_count       982
+    school_owner_loan_any            33117
