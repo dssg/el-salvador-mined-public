@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="https://github.com/dssg/El_Salvador_mined_education/blob/master/images/dsapplogo2017small-1.png">
+  <img src="./images/dsapplogo2017small-1.png">
 </p>
 
 # Reducing Early School Dropout Rates in El Salvador
@@ -19,7 +19,7 @@ The objective of this research is to build a model that accurately predicts the 
 ### Unit of Analysis + Temporal Cross-Validation
 Predictions are made at the year-student level (eg. as of January 1, 2009, what is the risk that a given student will not return to school in 2010?). We used data from 2009-2018 for this analysis. While we were provided some data from 2008, most of the data was missing so we excluded that year from our analysis.  We used a temporal cross-validation approach to train the models to ensure that our final model will generalize effectively to new data. As illustrated by Figure 1 below, this temporal cross-validation approach splits the data by time - training each individual model on increasing amounts of data 
 
-![alt text](https://github.com/dssg/El_Salvador_mined_education/blob/master/images/temporalcrossvalidation.png "Temporal Cross-Validation")
+![alt text](./images/temporalcrossvalidation.png "Temporal Cross-Validation")
 
 For each model, we define the cohort for our prediction as all students who are enrolled in school on the “as-of-date”. Therefore, if a student is “dropped out” on January 01, 2014, they will not be included in the cohort for the January 01, 2014 prediction date and we will not predict whether they will remain “dropped out” in 2015. 
 
@@ -59,19 +59,19 @@ Figure 2 below shows the performance of our top three model groups on the metric
 
 ### Figure 2: Precision at 10% by Model Group and Year
 
-![alt text](https://github.com/dssg/El_Salvador_mined_education/blob/master/images/precision_10.png "Precision at 10%")
+![alt text](./images/precision_10.png "Precision at 10%")
 
 *Figure 2 above shows the performance of each of our model groups on the metric of precision at 10% across the 6 prediction dates used in temporal cross-validation. Precision at 10% measures the ratio of true positives (students predicted to drop out by the model that actually drop out) over the number of students in 10% of the population. This tells us how precisely our model identifies true dropouts if we predict that all students in the top 10% of risk scores will drop out.*
 
 ### Figure 3: Recall at 10% by Model Group and Year
 
-![alt text](https://github.com/dssg/El_Salvador_mined_education/blob/master/images/recall_10.png "Recall at 10%")
+![alt text](./images/recall_10.png "Recall at 10%")
 
 *Figure 3 above shows the performance of each of our model groups on the metric of recall at 10% across the 6 prediction dates used in temporal cross-validation. Recall at 10% measures the percentage of all true dropouts in our cohort identified by our model if we predict that all students in the top 10% of risk scores will drop out. The most frequent baseline assigns all observations a label of 0 as not dropping out of school (label = 0) is more common than dropping out of school (label = 1). Therefore, to calculate recall at 10% for the most frequent baseline, we randomly select 10% of the population and calculate the percentage of all true dropouts reached in that 10% sample. We note that this is very close to 10% for all years. Because the decision rule labels less than 1% of students as dropouts as discussed above, recall at 10% is calculated for the decision rule baseline by selecting all individuals labeled as dropouts by the decision rule plus a random sample of as many individuals from the remaining population as it takes to reach a 10% sample. We then calculate the percentage of all true dropouts reached in that 10% sample.*
 
 ### Figure 4: Number of Dropouts Reached in Top 10% of Risk Scores
 
-![alt text](https://github.com/dssg/El_Salvador_mined_education/blob/master/images/num_reached.png "Number reached")
+![alt text](./images/num_reached.png "Number reached")
 
 *Figure 4 above shows the average number of true dropouts each model group would identify across the 6 prediction dates used for temporal cross-validation if we predict that the top 10% of risk scores will drop out of school. We see that each of our model groups performs considerably better than both of the baselines, identifying nearly twice as many true dropouts in the top 10% of risk scores.*
 
